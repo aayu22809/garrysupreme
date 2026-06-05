@@ -173,101 +173,49 @@ POST /api/memory/approve
 
 ```ts
 import Fastify from "fastify";
-import cors from "@fastify/cors";
 
 const app = Fastify();
-await app.register(cors, { origin: true });
-
-// Set DEMO_PHONE to the full E.164 number of whoever places the demo call (e.g. "+14155551234")
-const DEMO_PHONE = process.env.DEMO_PHONE ?? "";
-
-// ─── Scoring layer: pre-rank menu so LLM doesn't freely invent recommendations ───
-
-function scoreItem(item: any, session: any, customer: any): number {
-  let score = 0;
-  if (session.temperature && item.attributes.includes(session.temperature)) score += 2;
-  if (session.sweetness && item.attributes.includes(session.sweetness)) score += 2;
-  if (session.dairy === "avoid" && item.dairyFree) score += 3;
-  for (const like of customer.likes ?? []) {
-    if (item.attributes.includes(like)) score += 1;
-  }
-  for (const avoid of customer.avoids ?? []) {
-    if (item.attributes.includes(avoid)) score -= 5;
-  }
-  return score;
-}
-
-function parseSession(request: string) {
-  const r = request.toLowerCase();
-  return {
-    temperature: r.includes("cold") ? "cold" : r.includes("hot") ? "hot" : null,
-    sweetness: r.includes("sweet") ? "sweet" : null,
-    dairy: r.includes("no dairy") || r.includes("dairy-free") ? "avoid" : null,
-  };
-}
-
-// ─── Endpoints ───
 
 app.post("/api/context", async (req, reply) => {
   const body = req.body as any;
+  const phone = body.phone_number ?? "unknown";
 
-  // Vapi injects the caller's number at call.customer.number in the webhook payload.
-  // The LLM does not provide phone_number — it comes from the Vapi call object.
-  const phone: string = body.call?.customer?.number ?? body.phone_number ?? "unknown";
-  const request: string = body.request ?? "";
-
-  // Swap the hardcoded profiles for real GBrain reads once GBrain is wired.
-  let customer;
-  try {
-    // TODO: replace with GBrain knowledge item read — readGBrainItem(`customers/${phone}.md`)
-    customer = phone === DEMO_PHONE
-      ? {
-          name: "Aayushya",
-          likes: ["sweet", "chai", "cardamom", "oat milk"],
-          avoids: ["dairy"],
-          style: "plain English, no menu jargon",
-          lastOrder: "hot chai latte, extra sweet, oat milk"
-        }
-      : {
-          name: "new customer",
-          likes: [],
-          avoids: [],
-          style: "simple and friendly"
-        };
-  } catch {
-    customer = { name: "new customer", likes: [], avoids: [], style: "simple and friendly" };
-  }
-
-  const menuItems = [
-    {
-      name: "Iced Chai Latte",
-      price: 5.75,
-      description: "Cold, sweet, spiced milk tea",
-      dairyFree: true,
-      attributes: ["cold", "sweet", "chai", "cardamom", "cinnamon"],
-      modifiers: ["oat milk", "extra sweet", "cardamom", "less ice"]
-    },
-    {
-      name: "Coconut Cold Brew",
-      price: 6.25,
-      description: "Light cold coffee with coconut and vanilla",
-      dairyFree: true,
-      attributes: ["cold", "sweet", "light", "coffee", "coconut", "vanilla"],
-      modifiers: ["vanilla", "caramel drizzle", "oat milk"]
-    }
-  ];
-
-  const session = parseSession(request);
-  const rankedMenu = menuItems
-    .map(item => ({ ...item, score: scoreItem(item, session, customer) }))
-    .sort((a, b) => b.score - a.score);
+  const customer = phone.includes("YOUR_NUMBER")
+    ? {
+        name: "Aayushya",
+        likes: ["sweet", "chai", "cardamom", "oat milk"],
+        avoids: ["dairy"],
+        style: "plain English, no menu jargon",
+        lastOrder: "hot chai latte, extra sweet, oat milk"
+      }
+    : {
+        name: "new customer",
+        likes: [],
+        avoids: [],
+        style: "simple and friendly"
+      };
 
   const company = {
     name: "Sunrise Coffee",
-    menu: rankedMenu,
+    menu: [
+      {
+        name: "Iced Chai Latte",
+        price: 5.75,
+        description: "Cold, sweet, spiced milk tea",
+        dairyFree: true,
+        modifiers: ["oat milk", "extra sweet", "cardamom"]
+      },
+      {
+        name: "Coconut Cold Brew",
+        price: 6.25,
+        description: "Light cold coffee with coconut and vanilla",
+        dairyFree: true,
+        modifiers: ["vanilla", "caramel drizzle"]
+      }
+    ],
     rules: [
       "Never guess about allergies.",
-      "Recommend the first ranked item as best pick and the second as backup."
+      "Recommend max one best item and one backup."
     ]
   };
 
@@ -275,49 +223,30 @@ app.post("/api/context", async (req, reply) => {
 });
 
 app.post("/api/save_order", async (req, reply) => {
-  // Reply immediately so Vapi doesn't hold the call open during the write.
-  reply.send({ ok: true });
+  const order = req.body;
 
-  // Write to GBrain asynchronously after unblocking Vapi.
-  const order = req.body as any;
-  setImmediate(async () => {
-    try {
-      // TODO: writeGBrainItem(`customers/${order.phone}.md`, updatedProfile)
-      // TODO: writeGBrainItem(`memory-facts/${Date.now()}.md`, memoryFact)
-      // TODO: emit SSE event to dashboard
-      console.log("ORDER SAVED", order);
-    } catch (err) {
-      console.error("save_order write failed", err);
-    }
-  });
+  console.log("ORDER SAVED", order);
+
+  // TODO: write to GBrain markdown / DB
+  // TODO: emit WebSocket dashboard event
+
+  return reply.send({ ok: true });
 });
 
 app.listen({ port: 3001, host: "0.0.0.0" });
 ```
 
-Expose backend — prefer a stable deployed URL over ngrok for a live demo:
-
-**Primary (Railway / Render — stable URL, no tunnel to babysit):**
-
-```bash
-# Railway: install CLI, then
-railway login && railway init && railway up
-# Render: push to GitHub, connect repo at render.com — deploys in ~2 min
-```
-
-**Fallback (ngrok — only if no time to deploy):**
+Expose local backend:
 
 ```bash
 ngrok http 3001
-# WARNING: free tier URL changes on every restart. Keep the terminal open.
-# ngrok goes down = demo dies mid-call.
 ```
 
-Use the stable backend URL in Vapi tool configuration:
+Use the ngrok URL in Vapi tools:
 
 ```txt
-https://your-railway-or-render-url.com/api/context
-https://your-railway-or-render-url.com/api/save_order
+https://your-ngrok-url.ngrok-free.app/api/context
+https://your-ngrok-url.ngrok-free.app/api/save_order
 ```
 
 ---
@@ -335,7 +264,7 @@ https://your-railway-or-render-url.com/api/save_order
     "properties": {
       "phone_number": {
         "type": "string",
-        "description": "Caller phone number — backend reads this from call.customer.number in the Vapi webhook payload. Include as a passthrough parameter so the backend can correlate, but do not ask the LLM to invent it."
+        "description": "Caller phone number"
       },
       "request": {
         "type": "string",
@@ -377,11 +306,7 @@ https://your-railway-or-render-url.com/api/save_order
 ## Vapi System Prompt
 
 ```txt
-You are Pulse, a friendly, personalized AI phone concierge for Sunrise Coffee.
-
-// NOTE FOR BUILD: {{company_name}} substitution only works for Vapi outbound calls you initiate.
-// For inbound calls, the system prompt is static — hardcode the business name here.
-// If multi-business support is needed, create one Vapi assistant per business.
+You are Pulse, a friendly, personalized AI phone concierge for {{company_name}}.
 
 YOUR JOB:
 You help customers order by translating normal human language into the right menu item.
@@ -498,12 +423,7 @@ This is the core demo. Do not overcomplicate.
 
 ---
 
-# Demo Script — 3:00
-
-> **Note:** Live phone demos with Vapi tool calls take longer than scripted reads.
-> Each tool call (get_context, save_order) adds ~1–2 seconds of voice silence.
-> Budget 3:00 and negotiate with judges in advance if the slot is 2:30.
-> Record a backup video of a clean run in case live audio fails.
+# Demo Script — 2:30
 
 ## [0:00 - 0:25] The Problem — Personal Story
 
@@ -515,7 +435,7 @@ This is the core demo. Do not overcomplicate.
 
 > Pulse lets any customer call any business and talk to an AI that knows the entire business and knows them personally. It is like having a best friend who works at every store you shop at.
 
-## [0:45 - 2:00] The Demo — Live Phone Call
+## [0:45 - 1:40] The Demo — Live Phone Call
 
 - Show dashboard: "Sunrise Coffee" with storefront, customers, and live call panel.
 - Say: "Let me call Sunrise Coffee right now."
@@ -527,7 +447,7 @@ This is the core demo. Do not overcomplicate.
 - Agent remembers mom's preference.
 - Dashboard updates live.
 
-## [2:00 - 2:30] The Scale
+## [1:40 - 2:00] The Scale
 
 > Now here's why this matters for business.
 >
@@ -544,7 +464,7 @@ Show:
 $86 estimated recovered revenue today
 ```
 
-## [2:30 - 3:00] The Close
+## [2:00 - 2:30] The Close
 
 > Pulse fixes the interface between customers and businesses.
 >
@@ -578,27 +498,17 @@ Everyone:
 - [ ] Create monorepo in `yc-gbrain/`
 - [ ] Set up Vapi account
 - [ ] Get Vapi phone number
-- [ ] Get API keys (Vapi, GBrain, OpenAI/Anthropic)
+- [ ] Get API keys
 - [ ] Set up GBrain locally or file-backed GBrain-shaped markdown
 - [ ] Start Fastify server
 - [ ] Start Next.js dashboard
 - [ ] Read demo script aloud once
 - [ ] Assign tasks
 
-**Demo phone setup — do this in Phase 1, not Phase 4:**
-
-- [ ] Decide which phone number places the demo call
-- [ ] Set `DEMO_PHONE` env var to that number in E.164 format (e.g. `+14155551234`)
-- [ ] Seed `customers/aayushya.md` with preferences matched to that number
-- [ ] Make one test call to confirm the agent greets by name
-- [ ] Deploy backend to Railway or Render (stable URL — don't rely on ngrok for the live demo)
-- [ ] Add `@fastify/cors` dependency
-
 Gate:
 
 ```txt
 By hour 1, everyone knows the demo path.
-By hour 1, one test call works and the agent greets by name.
 ```
 
 ---
@@ -622,7 +532,7 @@ Write fixture data:
 Write:
 
 - [ ] Vapi system prompt
-- [ ] 3:00 demo script (live phone call + tool calls take longer than scripted — budget 3 min)
+- [ ] 2:30 demo script
 - [ ] Q&A answers
 - [ ] ROI cards for dashboard
 
@@ -653,26 +563,18 @@ Critical path:
 
 Build Fastify:
 
-- [ ] `POST /api/context` — reads Customer Brain + Company Brain, pre-ranks menu via `scoreItem`
-- [ ] `POST /api/save_order` — replies immediately, writes to GBrain asynchronously
+- [ ] `POST /api/context`
+- [ ] `POST /api/save_order`
 - [ ] `GET /api/calls/active`
 - [ ] `GET /api/dashboard`
-- [ ] SSE endpoint for live dashboard events (`GET /api/events` — use SSE, not WebSocket; simpler for Next.js)
+- [ ] WebSocket or SSE for live dashboard events
 - [ ] GBrain/file-backed markdown reader
 - [ ] GBrain/file-backed markdown writer
-- [ ] `@fastify/cors` registered
-
-**GStack tasks (assign to one person, can run in parallel):**
-
-- [ ] Wire GStack Ingest role: `save_order` emits a GStack event after writing memory fact
-- [ ] Wire GStack Reviewer role: memory facts start as `pending_review`; approval endpoint flips to `approved`
-- [ ] Stub GStack Analyst role: nightly dream cycle endpoint that aggregates memory facts into weekly insights
 
 Gate:
 
 ```txt
 By hour 4, phone call should hit backend.
-By hour 4, /api/context returns ranked menu and correct customer profile.
 ```
 
 ---
@@ -737,7 +639,7 @@ By hour 8, full demo should work once cleanly.
 ### Product / Pitch
 
 - [ ] Rehearse full demo 5 times
-- [ ] Cut anything over 3:00 (live phone call needs the extra time)
+- [ ] Cut anything over 2:30
 - [ ] Record final backup video
 - [ ] Prepare live failure fallback
 - [ ] Prepare judge Q&A
@@ -753,15 +655,15 @@ By hour 8, full demo should work once cleanly.
 ### Coder #1 — Voice
 
 - [ ] Final Vapi test
-- [ ] Confirm planted phone + `DEMO_PHONE` env var still matches (set in Phase 1)
+- [ ] Set up planted phone
 - [ ] Confirm agent phone number works
-- [ ] Confirm backend URL still works (deployed URL — not ngrok)
-- [ ] Do full rehearsal call in the actual presentation room (check ambient noise)
+- [ ] Confirm backend URL still works
+- [ ] Keep ngrok alive
 
 ### Coder #2 — Backend
 
 - [ ] Stress test endpoints
-- [ ] Confirm SSE stream stable (test with two simultaneous browser tabs watching dashboard)
+- [ ] Confirm WebSocket/SSE stable
 - [ ] Confirm fallback fixtures work
 - [ ] Stand by for bugs
 
@@ -829,7 +731,7 @@ If fail: simplify tool schema.
 Dashboard updates from backend.
 ```
 
-If fail: use polling (setInterval every 1s on the dashboard, GET /api/calls/active).
+If fail: use polling instead of WebSocket.
 
 ### Gate 5 — Hour 9
 
@@ -948,7 +850,7 @@ Confidence: 0.86
 Status: pending_review
 Evidence: "I want something cold, sweet, not too heavy, no dairy."
 Call ID: call_demo_001
-Created: {{ISO_TIMESTAMP}}  <!-- use new Date().toISOString() — never hardcode the date -->
+Created: 2026-05-16
 ```
 
 ---
@@ -1018,22 +920,7 @@ Why this matters:
 
 Do not let the LLM freely invent menu items.
 
-Use a scoring layer that runs inside `/api/context` **before** the response is returned to Vapi. The LLM receives a pre-ranked menu and is told to recommend the top item — this constrains its output to real inventory.
-
-Integration point in `/api/context`:
-
-```ts
-// After loading menu items and customer profile:
-const session = parseSession(request);  // parse temperature/sweetness/dairy from the caller's words
-const rankedMenu = menuItems
-  .map(item => ({ ...item, score: scoreItem(item, session, customer) }))
-  .sort((a, b) => b.score - a.score);
-
-// Return ranked menu so the LLM's "recommend the first item" instruction stays grounded
-return reply.send({ customer, company: { ...company, menu: rankedMenu } });
-```
-
-Scoring function (lives in `src/scorer.ts`):
+Use a simple scoring layer.
 
 ```ts
 function scoreItem(item, session, customer) {
@@ -1055,19 +942,13 @@ function scoreItem(item, session, customer) {
 }
 ```
 
-System prompt rule that pairs with this:
+Decision gate:
 
 ```txt
-The menu is already ranked by fit. Recommend the first item as your top pick and mention the second as a backup. Do not suggest items not on the list.
-```
-
-Decision gate for the agent:
-
-```txt
-confidence >= 0.85 → recommend top-ranked item
-0.60–0.84 → ask one clarifying question (hot or cold? sweet or not?)
+confidence >= 0.85 → recommend
+0.60–0.84 → ask one clarifying question
 < 0.60 → offer two options or escalate
-allergen uncertainty → human handoff, no guessing
+allergen uncertainty → human handoff
 ```
 
 ---
